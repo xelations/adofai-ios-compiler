@@ -129,7 +129,7 @@ static void initialize_runtime_injection() {
     uintptr_t runtime_slide = (uintptr_t)_dyld_get_image_header(0);
     
     // !!! STEP REQUIRED: CONFIRM THESE TWO OFFSETS IN YOUR DUMP.CS !!!
-    uintptr_t loadScene_offset = 0x2A3B4C; // Find 'UnityEngine.SceneManagement.SceneManager$$LoadScene'
+    uintptr_t loadScene_offset = 0x289D8B4; // Find 'UnityEngine.SceneManagement.SceneManager$$LoadScene'
     uintptr_t editorAwake_offset = 0x15E430C; // scnEditor.Awake
     uintptr_t loadLevel_offset = 0x160792C; // scnEditor.OpenLevel
 
