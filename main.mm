@@ -5,26 +5,27 @@
 __attribute__((weak_import)) extern "C" void MSHookFunction(void *symbol, void *hook, void **old);
 extern "C" uintptr_t _dyld_get_image_header(uint32_t image_index);
 
-// Core Unity/IL2CPP String Allocation Export
+// Core Unity string representation structure
 typedef struct Il2CppString {
     int32_t length;
-    uint16_t chars[0];
+    uint16_t chars;
 } Il2CppString;
 __attribute__((weak_import)) extern "C" Il2CppString* il2cpp_string_new(const char* str);
 
-void (*orig_scrController_Awake)(void* instance);
-void (*scnEditor_OpenEditor)(void* instance);
+// Function pointer signatures targeting scene management 
+void (*UnityEngine_SceneManagement_SceneManager_LoadScene)(Il2CppString* sceneName);
 void (*scnEditor_LoadLevel)(void* instance, Il2CppString* path);
 
-void* activeEngineToken = nullptr;
+// Global placeholder to store the level editor controller when it wakes up
+void* activeEditorInstance = nullptr;
+void (*orig_scnEditor_Awake)(void* instance);
 
-void hook_scrController_Awake(void* instance) {
-    orig_scrController_Awake(instance);
-    activeEngineToken = instance;
-    NSLog(@"[ADOFAI_Port] Hooked active gameplay controller: %p", instance);
+void hook_scnEditor_Awake(void* instance) {
+    orig_scnEditor_Awake(instance);
+    activeEditorInstance = instance;
+    NSLog(@"[ADOFAI_Port] Level editor instance securely captured: %p", instance);
 }
 
-// Persistent Native Controller Layer to protect buttons from being swept out of memory
 @interface PersistentModOverlay : UIViewController <UIDocumentPickerDelegate>
 @property (nonatomic, strong) UIButton *editorLaunchBtn;
 @property (nonatomic, strong) UIButton *fileBrowserBtn;
@@ -45,22 +46,22 @@ void hook_scrController_Awake(void* instance) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.view.userInteractionEnabled = NO; // Pass touches through to Unity backgrounds
+    self.view.userInteractionEnabled = NO;
     
-    // 1. Permanent Button Definition: Open PC Editor Scene
+    // UI Layout Definition for PC Editor Activation
     self.editorLaunchBtn = [UIButton buttonWithType:UIButtonTypeCustom];
-    self.editorLaunchBtn.frame = CGRectMake(40, 40, 160, 44);
-    self.editorLaunchBtn.backgroundColor = [UIColor colorWithRed:0.0 green:0.6 blue:0.2 alpha:0.85];
+    self.editorLaunchBtn.frame = CGRectMake(40, 40, 170, 44);
+    self.editorLaunchBtn.backgroundColor = [UIColor colorWithRed:0.0 green:0.5 blue:0.2 alpha:0.9];
     self.editorLaunchBtn.layer.cornerRadius = 10;
-    [self.editorLaunchBtn setTitle:@"Open PC Editor" forState:UIControlStateNormal];
+    [self.editorLaunchBtn setTitle:@"Launch PC Editor" forState:UIControlStateNormal];
     self.editorLaunchBtn.userInteractionEnabled = YES;
     [self.editorLaunchBtn addTarget:self action:@selector(handleLaunchRequest) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:self.editorLaunchBtn];
 
-    // 2. Permanent Button Definition: Import Level File (.adofai)
+    // UI Layout Definition for File Importing
     self.fileBrowserBtn = [UIButton buttonWithType:UIButtonTypeCustom];
-    self.fileBrowserBtn.frame = CGRectMake(220, 40, 180, 44);
-    self.fileBrowserBtn.backgroundColor = [UIColor colorWithRed:0.1 green:0.1 blue:0.4 alpha:0.85];
+    self.fileBrowserBtn.frame = CGRectMake(230, 40, 180, 44);
+    self.fileBrowserBtn.backgroundColor = [UIColor colorWithRed:0.1 green:0.1 blue:0.4 alpha:0.9];
     self.fileBrowserBtn.layer.cornerRadius = 10;
     [self.fileBrowserBtn setTitle:@"Import Custom File" forState:UIControlStateNormal];
     self.fileBrowserBtn.userInteractionEnabled = YES;
@@ -72,23 +73,27 @@ void hook_scrController_Awake(void* instance) {
     dispatch_async(dispatch_get_main_queue(), ^{
         UIWindow *keyWindow = [UIApplication sharedApplication].keyWindow;
         if (keyWindow) {
-            // Anchor our persistent layout directly into the hardware display stack
             self.view.frame = keyWindow.bounds;
             [keyWindow addSubview:self.view];
             [keyWindow bringSubviewToFront:self.view];
-            NSLog(@"[ADOFAI_Port] Persistent controller attached to primary layout stack.");
         }
     });
 }
 
 - (void)handleLaunchRequest {
-    if (activeEngineToken && scnEditor_OpenEditor) {
-        NSLog(@"[ADOFAI_Port] Shifting context state to PC Level Editor scene.");
-        scnEditor_OpenEditor(activeEngineToken);
+    if (UnityEngine_SceneManagement_SceneManager_LoadScene) {
+        NSLog(@"[ADOFAI_Port] Forcing Unity to load the level editor scene asset container.");
+        // Generate an internal string pointing to the editor setup scene
+        Il2CppString* sceneToken = il2cpp_string_new("scnEditor");
+        UnityEngine_SceneManagement_SceneManager_LoadScene(sceneToken);
     }
 }
 
 - (void)handleFileRequest {
+    if (!activeEditorInstance) {
+        NSLog(@"[ADOFAI_Port] Warning: Cannot import file because you aren't inside the Editor scene yet.");
+        return;
+    }
     UIDocumentPickerViewController *filePicker = [[UIDocumentPickerViewController alloc] 
         initForOpeningContentTypes:@[[UTType typeWithFilenameExtension:@"adofai"] ?: [UTType item]] asCopy:YES];
     filePicker.delegate = self;
@@ -97,20 +102,15 @@ void hook_scrController_Awake(void* instance) {
 
 - (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     NSURL *selectedFileURL = [urls firstObject];
-    if (selectedFileURL && activeEngineToken && scnEditor_LoadLevel) {
+    if (selectedFileURL && activeEditorInstance && scnEditor_LoadLevel) {
         [selectedFileURL startAccessingSecurityScopedResource];
-        
-        // Fix string parsing mismatch: Convert C++ text pointers to C# IL2CPP structures safely
         Il2CppString* unityStringPath = il2cpp_string_new([[selectedFileURL path] UTF8String]);
-        NSLog(@"[ADOFAI_Port] Parsing level data stream from path: %@", [selectedFileURL path]);
-        
-        scnEditor_LoadLevel(activeEngineToken, unityStringPath);
+        scnEditor_LoadLevel(activeEditorInstance, unityStringPath);
         [selectedFileURL stopAccessingSecurityScopedResource];
     }
 }
 @end
 
-// Secondary hardware monitor initialization hook to handle application launching cycles cleanly
 @interface AppLaunchObserver : NSObject
 @end
 @implementation AppLaunchObserver
@@ -119,7 +119,6 @@ void hook_scrController_Awake(void* instance) {
                                                       object:nil 
                                                        queue:[NSOperationQueue mainQueue] 
                                                   usingBlock:^(NSNotification *note) {
-        // Enforce the persistent bridge layer insertion right as the system boots up
         [[PersistentModOverlay sharedInstance] attachToActiveWindow];
     }];
 }
@@ -129,11 +128,13 @@ __attribute__((constructor))
 static void initialize_runtime_injection() {
     uintptr_t runtime_slide = (uintptr_t)_dyld_get_image_header(0);
     
-    uintptr_t awake_offset = 0x15934C8;  
-    uintptr_t editor_offset = 0x15E430C; 
-    uintptr_t load_offset = 0x160792C;   
+    // !!! STEP REQUIRED: CONFIRM THESE TWO OFFSETS IN YOUR DUMP.CS !!!
+    uintptr_t loadScene_offset = 0x2A3B4C; // Find 'UnityEngine.SceneManagement.SceneManager$$LoadScene'
+    uintptr_t editorAwake_offset = 0x15E430C; // scnEditor.Awake
+    uintptr_t loadLevel_offset = 0x160792C; // scnEditor.OpenLevel
 
-    MSHookFunction((void *)(runtime_slide + awake_offset), (void *)&hook_scrController_Awake, (void **)&orig_scrController_Awake);
-    scnEditor_OpenEditor = (void (*)(void*))(runtime_slide + editor_offset);
-    scnEditor_LoadLevel = (void (*)(void*, Il2CppString*))(runtime_slide + load_offset);
+    UnityEngine_SceneManagement_SceneManager_LoadScene = (void (*)(Il2CppString*))(runtime_slide + loadScene_offset);
+    scnEditor_LoadLevel = (void (*)(void*, Il2CppString*))(runtime_slide + loadLevel_offset);
+
+    MSHookFunction((void *)(runtime_slide + editorAwake_offset), (void *)&hook_scnEditor_Awake, (void **)&orig_scnEditor_Awake);
 }
