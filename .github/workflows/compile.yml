@@ -1,0 +1,27 @@
+name: Remote iOS Compiler
+on: [push, workflow_dispatch]
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Download Cydia Substrate Headers
+        run: |
+          mkdir -p include
+          curl -sL "https://githubusercontent.com" -o include/substrate.h
+
+      - name: Compile dylib
+        run: |
+          xcrun --sdk iphoneos clang++ -dynamiclib -arch arm64 -arch arm64e \
+          -miphoneos-version-min=14.0 -I./include \
+          -framework UIKit -framework Foundation -framework UniformTypeIdentifiers \
+          -o AdofaiPCBridge.dylib main.mm
+
+      - name: Upload Binary Asset
+        uses: actions/artifacts@v4
+        with:
+          name: AdofaiPCBridge-Binary
+          path: AdofaiPCBridge.dylib
