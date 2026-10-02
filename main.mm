@@ -1,29 +1,51 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#include <sys/mman.h>
+#include <mach/mach.h>
 
-__attribute__((weak_import)) extern "C" void MSHookFunction(void *symbol, void *hook, void **old);
 extern "C" uintptr_t _dyld_get_image_header(uint32_t image_index);
 
-// Core Unity string representation structure
 typedef struct Il2CppString {
     int32_t length;
     uint16_t chars;
 } Il2CppString;
 __attribute__((weak_import)) extern "C" Il2CppString* il2cpp_string_new(const char* str);
 
-// Function pointer signatures targeting scene management 
 void (*UnityEngine_SceneManagement_SceneManager_LoadScene)(Il2CppString* sceneName);
 void (*scnEditor_LoadLevel)(void* instance, Il2CppString* path);
 
-// Global placeholder to store the level editor controller when it wakes up
-void* activeEditorInstance = nullptr;
-void (*orig_scnEditor_Awake)(void* instance);
+// Global static pointer placeholder
+void* globalEditorInstance = nil;
 
-void hook_scnEditor_Awake(void* instance) {
-    orig_scnEditor_Awake(instance);
-    activeEditorInstance = instance;
-    NSLog(@"[ADOFAI_Port] Level editor instance securely captured: %p", instance);
+// Safe memory page patching utility to overwrite code natively
+void patch_memory(uintptr_t address, void* custom_func) {
+    vm_address_t page_start = address & ~PAGE_MASK;
+    vm_size_t page_size = PAGE_SIZE;
+    
+    // Unlock the memory segment to allow writing instructions
+    kern_return_t kr = vm_protect(mach_task_self(), page_start, page_size, FALSE, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
+    if (kr != KERN_SUCCESS) return;
+    
+    // Generate an absolute branch instruction jump structure (ARM64 Trampoline)
+    uint32_t jump_instructions[] = {
+        0x58000050, // LDR X16, #8
+        0xd61f0200, // BR X16
+        (uint32_t)(uintptr_t)custom_func,
+        (uint32_t)((uintptr_t)custom_func >> 32)
+    };
+    
+    memcpy((void*)address, jump_instructions, sizeof(jump_instructions));
+    
+    // Re-lock the memory address for device execution safety
+    vm_protect(mach_task_self(), page_start, page_size, FALSE, VM_PROT_READ | VM_PROT_EXECUTE);
+    sys_icache_invalidate((void*)address, sizeof(jump_instructions));
+}
+
+// Our custom intercept handler that replaces the native scnEditor.Awake
+void custom_scnEditor_Awake(void* instance) {
+    globalEditorInstance = instance;
+    NSLog(@"[ADOFAI_Port] Hook triggered. Captured scnEditor instance: %p", instance);
 }
 
 @interface PersistentModOverlay : UIViewController <UIDocumentPickerDelegate>
@@ -48,7 +70,6 @@ void hook_scnEditor_Awake(void* instance) {
     [super viewDidLoad];
     self.view.userInteractionEnabled = NO;
     
-    // UI Layout Definition for PC Editor Activation
     self.editorLaunchBtn = [UIButton buttonWithType:UIButtonTypeCustom];
     self.editorLaunchBtn.frame = CGRectMake(40, 40, 170, 44);
     self.editorLaunchBtn.backgroundColor = [UIColor colorWithRed:0.0 green:0.5 blue:0.2 alpha:0.9];
@@ -58,7 +79,6 @@ void hook_scnEditor_Awake(void* instance) {
     [self.editorLaunchBtn addTarget:self action:@selector(handleLaunchRequest) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:self.editorLaunchBtn];
 
-    // UI Layout Definition for File Importing
     self.fileBrowserBtn = [UIButton buttonWithType:UIButtonTypeCustom];
     self.fileBrowserBtn.frame = CGRectMake(230, 40, 180, 44);
     self.fileBrowserBtn.backgroundColor = [UIColor colorWithRed:0.1 green:0.1 blue:0.4 alpha:0.9];
@@ -82,16 +102,15 @@ void hook_scnEditor_Awake(void* instance) {
 
 - (void)handleLaunchRequest {
     if (UnityEngine_SceneManagement_SceneManager_LoadScene) {
-        NSLog(@"[ADOFAI_Port] Forcing Unity to load the level editor scene asset container.");
-        // Generate an internal string pointing to the editor setup scene
+        NSLog(@"[ADOFAI_Port] Calling Native Unity Scene Switcher.");
         Il2CppString* sceneToken = il2cpp_string_new("scnEditor");
         UnityEngine_SceneManagement_SceneManager_LoadScene(sceneToken);
     }
 }
 
 - (void)handleFileRequest {
-    if (!activeEditorInstance) {
-        NSLog(@"[ADOFAI_Port] Warning: Cannot import file because you aren't inside the Editor scene yet.");
+    if (!globalEditorInstance) {
+        NSLog(@"[ADOFAI_Port] Cannot load: Enter the Editor scene first so the token updates.");
         return;
     }
     UIDocumentPickerViewController *filePicker = [[UIDocumentPickerViewController alloc] 
@@ -102,10 +121,10 @@ void hook_scnEditor_Awake(void* instance) {
 
 - (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     NSURL *selectedFileURL = [urls firstObject];
-    if (selectedFileURL && activeEditorInstance && scnEditor_LoadLevel) {
+    if (selectedFileURL && globalEditorInstance && scnEditor_LoadLevel) {
         [selectedFileURL startAccessingSecurityScopedResource];
         Il2CppString* unityStringPath = il2cpp_string_new([[selectedFileURL path] UTF8String]);
-        scnEditor_LoadLevel(activeEditorInstance, unityStringPath);
+        scnEditor_LoadLevel(globalEditorInstance, unityStringPath);
         [selectedFileURL stopAccessingSecurityScopedResource];
     }
 }
@@ -128,13 +147,13 @@ __attribute__((constructor))
 static void initialize_runtime_injection() {
     uintptr_t runtime_slide = (uintptr_t)_dyld_get_image_header(0);
     
-    // !!! STEP REQUIRED: CONFIRM THESE TWO OFFSETS IN YOUR DUMP.CS !!!
-    uintptr_t loadScene_offset = 0x289D8B4; // Find 'UnityEngine.SceneManagement.SceneManager$$LoadScene'
-    uintptr_t editorAwake_offset = 0x15E430C; // scnEditor.Awake
-    uintptr_t loadLevel_offset = 0x160792C; // scnEditor.OpenLevel
+    uintptr_t loadScene_offset = 0x289D8B4;   
+    uintptr_t editorAwake_offset = 0x15E430C; 
+    uintptr_t loadLevel_offset = 0x160792C;   
 
     UnityEngine_SceneManagement_SceneManager_LoadScene = (void (*)(Il2CppString*))(runtime_slide + loadScene_offset);
     scnEditor_LoadLevel = (void (*)(void*, Il2CppString*))(runtime_slide + loadLevel_offset);
 
-    MSHookFunction((void *)(runtime_slide + editorAwake_offset), (void *)&hook_scnEditor_Awake, (void **)&orig_scnEditor_Awake);
+    // Apply the pure memory patch, completely bypassing MSHookFunction dependency limitations
+    patch_memory(runtime_slide + editorAwake_offset, (void*)&custom_scnEditor_Awake);
 }
