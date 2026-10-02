@@ -2,82 +2,128 @@
 #import <UIKit/UIKit.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
-// Explicit runtime linking attributes to fix the compiler error
 __attribute__((weak_import)) extern "C" void MSHookFunction(void *symbol, void *hook, void **old);
 extern "C" uintptr_t _dyld_get_image_header(uint32_t image_index);
 
+// Core Unity/IL2CPP String Allocation Export
+typedef struct Il2CppString {
+    int32_t length;
+    uint16_t chars[0];
+} Il2CppString;
+__attribute__((weak_import)) extern "C" Il2CppString* il2cpp_string_new(const char* str);
+
 void (*orig_scrController_Awake)(void* instance);
 void (*scnEditor_OpenEditor)(void* instance);
-void (*scnEditor_LoadLevel)(void* instance, void* il2cppStringPath);
+void (*scnEditor_LoadLevel)(void* instance, Il2CppString* path);
 
 void* activeEngineToken = nullptr;
 
 void hook_scrController_Awake(void* instance) {
     orig_scrController_Awake(instance);
     activeEngineToken = instance;
-    NSLog(@"[ADOFAI_Port] Hooked gameplay engine frame container.");
+    NSLog(@"[ADOFAI_Port] Hooked active gameplay controller: %p", instance);
 }
 
-@interface DocumentPickerDelegate : NSObject <UIDocumentPickerDelegate>
+// Persistent Native Controller Layer to protect buttons from being swept out of memory
+@interface PersistentModOverlay : UIViewController <UIDocumentPickerDelegate>
+@property (nonatomic, strong) UIButton *editorLaunchBtn;
+@property (nonatomic, strong) UIButton *fileBrowserBtn;
++ (instancetype)sharedInstance;
+- (void)attachToActiveWindow;
 @end
 
-@implementation DocumentPickerDelegate
+@implementation PersistentModOverlay
+
++ (instancetype)sharedInstance {
+    static PersistentModOverlay *shared = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        shared = [[PersistentModOverlay alloc] init];
+    });
+    return shared;
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.view.userInteractionEnabled = NO; // Pass touches through to Unity backgrounds
+    
+    // 1. Permanent Button Definition: Open PC Editor Scene
+    self.editorLaunchBtn = [UIButton buttonWithType:UIButtonTypeCustom];
+    self.editorLaunchBtn.frame = CGRectMake(40, 40, 160, 44);
+    self.editorLaunchBtn.backgroundColor = [UIColor colorWithRed:0.0 green:0.6 blue:0.2 alpha:0.85];
+    self.editorLaunchBtn.layer.cornerRadius = 10;
+    [self.editorLaunchBtn setTitle:@"Open PC Editor" forState:UIControlStateNormal];
+    self.editorLaunchBtn.userInteractionEnabled = YES;
+    [self.editorLaunchBtn addTarget:self action:@selector(handleLaunchRequest) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:self.editorLaunchBtn];
+
+    // 2. Permanent Button Definition: Import Level File (.adofai)
+    self.fileBrowserBtn = [UIButton buttonWithType:UIButtonTypeCustom];
+    self.fileBrowserBtn.frame = CGRectMake(220, 40, 180, 44);
+    self.fileBrowserBtn.backgroundColor = [UIColor colorWithRed:0.1 green:0.1 blue:0.4 alpha:0.85];
+    self.fileBrowserBtn.layer.cornerRadius = 10;
+    [self.fileBrowserBtn setTitle:@"Import Custom File" forState:UIControlStateNormal];
+    self.fileBrowserBtn.userInteractionEnabled = YES;
+    [self.fileBrowserBtn addTarget:self action:@selector(handleFileRequest) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:self.fileBrowserBtn];
+}
+
+- (void)attachToActiveWindow {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIWindow *keyWindow = [UIApplication sharedApplication].keyWindow;
+        if (keyWindow) {
+            // Anchor our persistent layout directly into the hardware display stack
+            self.view.frame = keyWindow.bounds;
+            [keyWindow addSubview:self.view];
+            [keyWindow bringSubviewToFront:self.view];
+            NSLog(@"[ADOFAI_Port] Persistent controller attached to primary layout stack.");
+        }
+    });
+}
+
+- (void)handleLaunchRequest {
+    if (activeEngineToken && scnEditor_OpenEditor) {
+        NSLog(@"[ADOFAI_Port] Shifting context state to PC Level Editor scene.");
+        scnEditor_OpenEditor(activeEngineToken);
+    }
+}
+
+- (void)handleFileRequest {
+    UIDocumentPickerViewController *filePicker = [[UIDocumentPickerViewController alloc] 
+        initForOpeningContentTypes:@[[UTType typeWithFilenameExtension:@"adofai"] ?: [UTType item]] asCopy:YES];
+    filePicker.delegate = self;
+    [self presentViewController:filePicker animated:YES completion:nil];
+}
+
 - (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     NSURL *selectedFileURL = [urls firstObject];
     if (selectedFileURL && activeEngineToken && scnEditor_LoadLevel) {
         [selectedFileURL startAccessingSecurityScopedResource];
-        NSString *filePathString = [selectedFileURL path];
-        NSLog(@"[ADOFAI_Port] Relaying path to editor: %@", filePathString);
+        
+        // Fix string parsing mismatch: Convert C++ text pointers to C# IL2CPP structures safely
+        Il2CppString* unityStringPath = il2cpp_string_new([[selectedFileURL path] UTF8String]);
+        NSLog(@"[ADOFAI_Port] Parsing level data stream from path: %@", [selectedFileURL path]);
+        
+        scnEditor_LoadLevel(activeEngineToken, unityStringPath);
         [selectedFileURL stopAccessingSecurityScopedResource];
     }
 }
 @end
 
-static DocumentPickerDelegate *pickerDelegateInstance = nil;
-
-@interface ModButtonHandler : NSObject
-+ (void)handleLaunchRequest;
-+ (void)handleFileRequest;
+// Secondary hardware monitor initialization hook to handle application launching cycles cleanly
+@interface AppLaunchObserver : NSObject
 @end
-
-@implementation ModButtonHandler
-+ (void)handleLaunchRequest {
-    if (activeEngineToken && scnEditor_OpenEditor) {
-        scnEditor_OpenEditor(activeEngineToken);
-    }
-}
-+ (void)handleFileRequest {
-    UIViewController *rootViewController = [UIApplication sharedApplication].keyWindow.rootViewController;
-    pickerDelegateInstance = [[DocumentPickerDelegate alloc] init];
-    UIDocumentPickerViewController *filePicker = [[UIDocumentPickerViewController alloc] 
-        initForOpeningContentTypes:@[[UTType typeWithFilenameExtension:@"adofai"] ?: [UTType item]] asCopy:YES];
-    filePicker.delegate = pickerDelegateInstance;
-    [rootViewController presentViewController:filePicker animated:YES completion:nil];
+@implementation AppLaunchObserver
++ (void)load {
+    [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification 
+                                                      object:nil 
+                                                       queue:[NSOperationQueue mainQueue] 
+                                                  usingBlock:^(NSNotification *note) {
+        // Enforce the persistent bridge layer insertion right as the system boots up
+        [[PersistentModOverlay sharedInstance] attachToActiveWindow];
+    }];
 }
 @end
-
-void createOverlayInterface() {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        UIViewController *rootViewController = [UIApplication sharedApplication].keyWindow.rootViewController;
-        if (!rootViewController) return;
-
-        UIButton *editorLaunchBtn = [UIButton buttonWithType:UIButtonTypeCustom];
-        editorLaunchBtn.frame = CGRectMake(30, 60, 140, 44);
-        editorLaunchBtn.backgroundColor = [UIColor colorWithRed:0.0 green:0.5 blue:0.2 alpha:0.9];
-        editorLaunchBtn.layer.cornerRadius = 8;
-        [editorLaunchBtn setTitle:@"Open PC Editor" forState:UIControlStateNormal];
-        [editorLaunchBtn addTarget:[ModButtonHandler class] action:@selector(handleLaunchRequest) forControlEvents:UIControlEventTouchUpInside];
-        [rootViewController.view addSubview:editorLaunchBtn];
-
-        UIButton *fileBrowserBtn = [UIButton buttonWithType:UIButtonTypeCustom];
-        fileBrowserBtn.frame = CGRectMake(180, 60, 140, 44);
-        fileBrowserBtn.backgroundColor = [UIColor colorWithRed:0.1 green:0.1 blue:0.3 alpha:0.9];
-        fileBrowserBtn.layer.cornerRadius = 8;
-        [fileBrowserBtn setTitle:@"Import Custom File" forState:UIControlStateNormal];
-        [fileBrowserBtn addTarget:[ModButtonHandler class] action:@selector(handleFileRequest) forControlEvents:UIControlEventTouchUpInside];
-        [rootViewController.view addSubview:fileBrowserBtn];
-    });
-}
 
 __attribute__((constructor))
 static void initialize_runtime_injection() {
@@ -89,6 +135,5 @@ static void initialize_runtime_injection() {
 
     MSHookFunction((void *)(runtime_slide + awake_offset), (void *)&hook_scrController_Awake, (void **)&orig_scrController_Awake);
     scnEditor_OpenEditor = (void (*)(void*))(runtime_slide + editor_offset);
-    scnEditor_LoadLevel = (void (*)(void*, void*))(runtime_slide + load_offset);
-    createOverlayInterface();
+    scnEditor_LoadLevel = (void (*)(void*, Il2CppString*))(runtime_slide + load_offset);
 }
