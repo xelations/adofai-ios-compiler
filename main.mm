@@ -2,8 +2,8 @@
 #import <UIKit/UIKit.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
-// Embedding definitions directly so we do not have to download external headers
-extern "C" void MSHookFunction(void *symbol, void *hook, void **old);
+// Explicit runtime linking attributes to fix the compiler error
+__attribute__((weak_import)) extern "C" void MSHookFunction(void *symbol, void *hook, void **old);
 extern "C" uintptr_t _dyld_get_image_header(uint32_t image_index);
 
 void (*orig_scrController_Awake)(void* instance);
