@@ -21,7 +21,7 @@ jobs:
           -o AdofaiPCBridge.dylib main.mm
 
       - name: Upload Binary Asset
-        uses: actions/artifacts@v4
+        uses: actions/upload-artifact@v4
         with:
           name: AdofaiPCBridge-Binary
           path: AdofaiPCBridge.dylib
