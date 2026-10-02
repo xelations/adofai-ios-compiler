@@ -18,6 +18,7 @@ jobs:
           xcrun --sdk iphoneos clang++ -dynamiclib -arch arm64 -arch arm64e \
           -miphoneos-version-min=14.0 -I./include \
           -framework UIKit -framework Foundation -framework UniformTypeIdentifiers \
+          -Wno-deprecated-declarations -Wno-writable-strings \
           -o AdofaiPCBridge.dylib main.mm
 
       - name: Upload Binary Asset
