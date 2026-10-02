@@ -8,15 +8,10 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Download Cydia Substrate Headers
-        run: |
-          mkdir -p include
-          curl -sL "https://githubusercontent.com" -o include/substrate.h
-
       - name: Compile dylib
         run: |
           xcrun --sdk iphoneos clang++ -dynamiclib -arch arm64 -arch arm64e \
-          -miphoneos-version-min=14.0 -I./include \
+          -miphoneos-version-min=14.0 \
           -framework UIKit -framework Foundation -framework UniformTypeIdentifiers \
           -Wno-deprecated-declarations -Wno-writable-strings \
           -o AdofaiPCBridge.dylib main.mm
