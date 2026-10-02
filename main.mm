@@ -15,19 +15,15 @@ __attribute__((weak_import)) extern "C" Il2CppString* il2cpp_string_new(const ch
 void (*UnityEngine_SceneManagement_SceneManager_LoadScene)(Il2CppString* sceneName);
 void (*scnEditor_LoadLevel)(void* instance, Il2CppString* path);
 
-// Global static pointer placeholder
 void* globalEditorInstance = nil;
 
-// Safe memory page patching utility to overwrite code natively
 void patch_memory(uintptr_t address, void* custom_func) {
     vm_address_t page_start = address & ~PAGE_MASK;
     vm_size_t page_size = PAGE_SIZE;
     
-    // Unlock the memory segment to allow writing instructions
     kern_return_t kr = vm_protect(mach_task_self(), page_start, page_size, FALSE, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
     if (kr != KERN_SUCCESS) return;
     
-    // Generate an absolute branch instruction jump structure (ARM64 Trampoline)
     uint32_t jump_instructions[] = {
         0x58000050, // LDR X16, #8
         0xd61f0200, // BR X16
@@ -37,12 +33,14 @@ void patch_memory(uintptr_t address, void* custom_func) {
     
     memcpy((void*)address, jump_instructions, sizeof(jump_instructions));
     
-    // Re-lock the memory address for device execution safety
     vm_protect(mach_task_self(), page_start, page_size, FALSE, VM_PROT_READ | VM_PROT_EXECUTE);
-    sys_icache_invalidate((void*)address, sizeof(jump_instructions));
+    
+    // Using compiler built-in to flush instruction cache instead of sys_icache_invalidate
+    char* start = (char*)address;
+    char* end = start + sizeof(jump_instructions);
+    __builtin___clear_cache(start, end);
 }
 
-// Our custom intercept handler that replaces the native scnEditor.Awake
 void custom_scnEditor_Awake(void* instance) {
     globalEditorInstance = instance;
     NSLog(@"[ADOFAI_Port] Hook triggered. Captured scnEditor instance: %p", instance);
@@ -114,7 +112,7 @@ void custom_scnEditor_Awake(void* instance) {
         return;
     }
     UIDocumentPickerViewController *filePicker = [[UIDocumentPickerViewController alloc] 
-        initForOpeningContentTypes:@[[UTType typeWithFilenameExtension:@"adofai"] ?: [UTType item]] asCopy:YES];
+        initForOpeningContentTypes:@[[UTType typeWithFilenameExtension:@"adofai"] ?: [UTType data]] asCopy:YES];
     filePicker.delegate = self;
     [self presentViewController:filePicker animated:YES completion:nil];
 }
@@ -154,6 +152,5 @@ static void initialize_runtime_injection() {
     UnityEngine_SceneManagement_SceneManager_LoadScene = (void (*)(Il2CppString*))(runtime_slide + loadScene_offset);
     scnEditor_LoadLevel = (void (*)(void*, Il2CppString*))(runtime_slide + loadLevel_offset);
 
-    // Apply the pure memory patch, completely bypassing MSHookFunction dependency limitations
     patch_memory(runtime_slide + editorAwake_offset, (void*)&custom_scnEditor_Awake);
 }
