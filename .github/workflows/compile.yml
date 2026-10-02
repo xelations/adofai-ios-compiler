@@ -14,6 +14,7 @@ jobs:
           -miphoneos-version-min=14.0 \
           -framework UIKit -framework Foundation -framework UniformTypeIdentifiers \
           -Wno-deprecated-declarations -Wno-writable-strings \
+          -Xlinker -flat_namespace -Xlinker -undefined -Xlinker suppress \
           -o AdofaiPCBridge.dylib main.mm
 
       - name: Upload Binary Asset
